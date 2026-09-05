@@ -1,3 +1,13 @@
+---
+title: StockCurve
+emoji: 📈
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Shazam for Stocks 📈
 
 Sketch-based stock shape retrieval for Indian equity markets (NSE/BSE).
@@ -37,6 +47,26 @@ python main.py              # start server
 ngrok http 8000
 # share the ngrok URL
 ```
+
+## Deployment (Hugging Face Spaces — free)
+
+The full pipeline (Euclidean + Fourier + Siamese NN + learned fusion) runs on a
+free Hugging Face Space: **CPU basic (2 vCPU / 16 GB RAM)**, zero cost. Runtime
+data (`windows.npy`, `siamese.pt`, `fusion.pt`) is fetched at startup from the
+GitHub release `data-v1` — it stays out of git (see `data/.gitignore`).
+
+One-time setup:
+1. Create a read/write token at https://huggingface.co/settings/tokens
+2. GitHub repo → Settings → Secrets and variables → Actions → **Secret** `HF_TOKEN` = that token
+3. Same page → **Variable** `HF_SPACE_ID` = `your-hf-username/stockcurve`
+4. Push to `main` — the `Sync to Hugging Face Space` workflow creates and updates the Space.
+
+Notes:
+- The Space sleeps after ~48 h of inactivity (free tier); the next visit re-fetches
+  the data files, so the first cold start takes a minute or two.
+- The frontend is served by the same FastAPI app, so no CORS setup is needed.
+- Same `Dockerfile` + `start.sh` work on any Docker host (Render/Railway) — just
+  set the `PORT` env var.
 
 ## Project structure
 

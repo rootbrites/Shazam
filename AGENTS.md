@@ -38,8 +38,10 @@ paper comparing approaches.
    windows. `data/meta.json` holds symbol metadata. Nothing else. No SQL, no Redis,
    no external DB.
 
-7. **Free and zero-cost deployment only.** Render free tier for backend. ngrok for
-   local dev. No paid services, no paid APIs.
+7. **Free and zero-cost deployment only.** Hugging Face Space (free CPU basic,
+   2 vCPU / 16 GB) hosts the backend — runtime data is fetched at startup from
+   GitHub Releases via `start.sh`. ngrok for local dev. No paid services, no
+   paid APIs.
 
 8. **Every function has a docstring.** Single line is fine. No undocumented
    functions.
@@ -98,6 +100,12 @@ shazam-stocks/
 │
 ├── pipeline.py                ← Stage 1 filters + convergence layer + fusion/blend
 ├── main.py                    ← FastAPI app, SSE endpoint, static file serving
+│
+├── Dockerfile                 ← HF Spaces deploy image (CPU-only torch)
+├── start.sh                   ← fetch runtime data + launch uvicorn on $PORT
+├── .dockerignore              ← keep .venv/data binaries out of the image
+├── .github/
+│   └── workflows/sync-to-hf.yml ← mirrors main to the HF Space (hub-sync)
 │
 └── static/
     ├── index.html

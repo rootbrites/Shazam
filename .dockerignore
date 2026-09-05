@@ -1,0 +1,8 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+data/*
+!data/meta.json

@@ -1,0 +1,22 @@
+name: Sync to Hugging Face Space
+
+# Mirrors the repo into a Hugging Face Space (Docker SDK, free CPU basic).
+# Secrets/variables to set once in the GitHub repo settings:
+#   Secret   HF_TOKEN     — read/write token from https://huggingface.co/settings/tokens
+#   Variable HF_SPACE_ID  — e.g. "your-hf-username/stockcurve"
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: ${{ vars.HF_SPACE_ID }}
+          hf_token: ${{ secrets.HF_TOKEN }}
+          space_sdk: docker
