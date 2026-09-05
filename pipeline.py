@@ -13,7 +13,7 @@ for serializing and streaming these to the frontend.
 import math
 import json
 import numpy as np
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from matchers.euclidean import EuclideanMatcher
 from matchers.fourier   import FourierMatcher
@@ -25,6 +25,13 @@ try:
     _neural_matcher = _NeuralMatcher()
 except FileNotFoundError:
     _neural_matcher = None
+
+# Learned fusion layer is optional — only available after python train_fusion.py
+try:
+    from fusion import load_fusion, make_feature_vector
+    _fusion = load_fusion()
+except Exception:  # noqa: BLE001 — degrade gracefully to the heuristic blend
+    _fusion = None
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +159,13 @@ def _top_n_deduped(
     meta_map: dict,
     sketch: np.ndarray,
     scoring_mode: str = "abs_var",
+    reverse: bool = False,
 ) -> list[dict]:
     """
     Use matcher score to select candidates (dedup by symbol), then re-sort
     the collected top-n by the active scoring_mode ascending.
     """
-    scored_sorted = sorted(scored, key=lambda x: x[0])
+    scored_sorted = sorted(scored, key=lambda x: x[0], reverse=reverse)
     seen: set[str] = set()
     collected: list[dict] = []
     for matcher_score, cand in scored_sorted:
@@ -178,6 +186,7 @@ def build_per_matcher_results(
     enabled: set[str],
     scoring_mode: str = "abs_var",
     n: int = 5,
+    fusion: Optional[tuple] = None,
 ) -> dict[str, list[dict]]:
     """
     Build independent top-n lists for each enabled matcher plus a Blended list.
@@ -186,9 +195,12 @@ def build_per_matcher_results(
       { "Euclidean": [...], "Fourier": [...], "Neural Net": [...], "Blended": [...] }
     Disabled matchers map to an empty list. Each result has mae, std_abs, std_signed.
     scoring_mode controls the final ranking: 'mae' | 'abs_var' | 'signed_var'.
+    When fusion=(ranker, spec) is provided, the Blended list is selected with
+    the learned fusion score instead of the heuristic sharpness blend.
     """
     sharp = sharpness(sketch)
     alpha = sigmoid(sharp * 5)
+    ranker, spec = fusion if fusion is not None else (None, None)
 
     eu_scored: list[tuple[float, dict]] = []
     fo_scored: list[tuple[float, dict]] = []
@@ -207,17 +219,35 @@ def build_per_matcher_results(
         if "Neural Net" in enabled and nn is not None:
             nn_scored.append((nn, cand))
 
-        eu_term = (eu + nn) / 2.0 if (nn is not None and "Neural Net" in enabled) else eu
-        final   = alpha * eu_term + (1 - alpha) * fo
-        bl_scored.append((final, cand))
+        if ranker is not None:
+            prob = float(ranker.predict_proba(
+                make_feature_vector(sketch, cand, spec)[None, :])[0])
+            bl_scored.append((prob, cand))
+        else:
+            eu_term = (eu + nn) / 2.0 if (nn is not None and "Neural Net" in enabled) else eu
+            final   = alpha * eu_term + (1 - alpha) * fo
+            bl_scored.append((final, cand))
 
     kw = dict(scoring_mode=scoring_mode)
     return {
         "Euclidean":  _top_n_deduped(eu_scored, n, meta_map, sketch, **kw) if eu_scored else [],
         "Fourier":    _top_n_deduped(fo_scored, n, meta_map, sketch, **kw) if fo_scored else [],
         "Neural Net": _top_n_deduped(nn_scored, n, meta_map, sketch, **kw) if nn_scored else [],
-        "Blended":    _top_n_deduped(bl_scored, n, meta_map, sketch, **kw),
+        "Blended":    _top_n_deduped(bl_scored, n, meta_map, sketch, reverse=(ranker is not None), **kw),
     }
+
+
+def _top_symbols(scored: list[tuple[float, str]], reverse: bool = False) -> list[str]:
+    """Best-first deduped top-5 symbol list for the research log."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for score, sym in sorted(scored, key=lambda x: x[0], reverse=reverse):
+        if sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+        if len(out) == 5:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +345,37 @@ async def run_pipeline(
     sharp = sharpness(sketch)
     alpha = sigmoid(sharp * 5)
 
+    nn_active = (_neural_matcher is not None and "Neural Net" in enabled_matchers)
+    fusion_active = (
+        _fusion is not None
+        and bool(_fusion[1].get("nn_used", False)) == bool(nn_active)
+    )
+
     per_matcher = build_per_matcher_results(
         candidates, sketch, meta_map, enabled_matchers,
-        scoring_mode=scoring_mode, n=5
+        scoring_mode=scoring_mode, n=5,
+        fusion=_fusion if fusion_active else None,
     )
     blended_top = per_matcher["Blended"]
+
+    # Research-log top lists: heuristic sharpness blend vs learned fusion
+    heuristic_scored = []
+    for c in candidates:
+        eu = c.get("euclidean_score", 9e9)
+        fo = c.get("fourier_score", 9e9)
+        nn = c.get("nn_score")
+        eu_term = (eu + nn) / 2.0 if (nn is not None and nn_active) else eu
+        heuristic_scored.append((alpha * eu_term + (1 - alpha) * fo, c["symbol"]))
+    heuristic_top = _top_symbols(heuristic_scored, reverse=False)
+    learned_top = heuristic_top
+    if fusion_active:
+        ranker, spec = _fusion
+        learned_scored = []
+        for c in candidates:
+            prob = float(ranker.predict_proba(
+                make_feature_vector(sketch, c, spec)[None, :])[0])
+            learned_scored.append((prob, c["symbol"]))
+        learned_top = _top_symbols(learned_scored, reverse=True)
 
     # Research log (stdout as required by AGENTS.md)
     euclidean_top = [c["symbol"] for c in sorted(
@@ -328,12 +384,16 @@ async def run_pipeline(
         candidates, key=lambda x: x.get("fourier_score", 9e9))[:10]]
     nn_top        = [c["symbol"] for c in sorted(
         candidates, key=lambda x: x.get("nn_score") or 9e9)[:10]] \
-        if (_neural_matcher is not None and "Neural Net" in enabled_matchers) else []
+        if nn_active else []
 
     research_log = {
         "search_id":    search_id,
         "sharpness":    round(sharp, 6),
         "alpha":        round(alpha, 6),
+        "blend_mode":   "learned" if fusion_active else "heuristic",
+        "heuristic_top": heuristic_top,
+        "learned_top":  learned_top,
+        "top5_overlap": round(len(set(heuristic_top) & set(learned_top)) / 5.0, 2),
         "stage1_count": stage1_count,
         "stage2_count": stage2_count,
         "stage3_count": stage3_count,

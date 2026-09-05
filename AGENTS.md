@@ -44,9 +44,10 @@ paper comparing approaches.
 8. **Every function has a docstring.** Single line is fine. No undocumented
    functions.
 
-9. **Do not implement Stage 3b (ML matcher) yet.** Leave `matchers/nn.py` as a
-   stub with a `NotImplementedError`. It will be implemented later as a research
-   comparison.
+9. **Stage 3b (ML matcher) is implemented.** `matchers/nn.py` + `matchers/siamese.py`
+   provide the Siamese embedding matcher; retrain with `python train.py`. Adding
+   new matchers must go through the `BaseMatcher` interface and the `MATCHERS`
+   registry — never edit the pipeline to add one.
 
 10. **Do not over-engineer.** If something can be done in 10 lines, do it in 10
     lines. This is a research prototype, not production software.
@@ -73,18 +74,29 @@ shazam-stocks/
 ├── data/
 │   ├── windows.npy            ← precomputed normalized windows (run prepare_data.py once)
 │   ├── meta.json              ← symbol metadata {symbol, name, sector, cap_category}
-│   └── .gitignore             ← ignore windows.npy (too large for git)
+│   ├── pairs.npy              ← Siamese training pairs (run generate_pairs.py)
+│   ├── siamese.pt             ← trained SiameseNet weights (run train.py)
+│   ├── fusion.pt              ← trained fusion ranker weights (run train_fusion.py)
+│   ├── fusion_config.json     ← fusion feature spec + ablation metrics
+│   └── .gitignore             ← ignore generated artifacts (too large for git)
 │
 ├── prepare_data.py            ← run once to build windows.npy and meta.json
+├── generate_pairs.py          ← build Siamese training pairs (pairs.npy)
+├── train.py                   ← train the Siamese matcher (siamese.pt)
+├── evaluate.py                ← matcher evaluation harness
+├── train_fusion.py            ← train the learned fusion layer (fusion.pt)
+│
+├── fusion.py                  ← learned fusion: MLP ranker + features + queries
 │
 ├── matchers/
-│   ├── __init__.py
+│   ├── __init__.py            ← MATCHERS registry
 │   ├── base.py                ← BaseMatcher abstract class
 │   ├── euclidean.py           ← Stage 2: smoothed Euclidean
 │   ├── fourier.py             ← Stage 3a: FFT magnitude matching
-│   └── nn.py                  ← Stage 3b: stub, NotImplementedError
+│   ├── nn.py                  ← Stage 3b: Siamese embedding matcher
+│   └── siamese.py             ← SiameseNet architecture (Conv1d encoder)
 │
-├── pipeline.py                ← Stage 1 filters + convergence layer + sharpness blend
+├── pipeline.py                ← Stage 1 filters + convergence layer + fusion/blend
 ├── main.py                    ← FastAPI app, SSE endpoint, static file serving
 │
 └── static/
@@ -203,6 +215,24 @@ alpha = sigmoid(sharpness * 5)   # 0=smooth→Fourier, 1=sharp→Euclidean
 final_score = alpha * euclidean_score + (1 - alpha) * fourier_score
 Sort by final_score, return top 5
 Stream: SSE stage=4 event with full results
+```
+
+### Learned Fusion (fusion.py + train_fusion.py) — optional upgrade
+When `data/fusion.pt` exists, the convergence layer uses a learned ranker
+instead of the heuristic alpha blend (unless NN-matcher availability differs
+from the training config, in which case it falls back to the heuristic):
+
+```
+Features per (query, candidate): [sketch sharpness, sketch roughness,
+  window std, euclidean score, fourier score, nn score]
+  + cap one-hot + sector one-hot
+Model: 2-layer MLP → relevance logit (higher = better)
+Train: python train_fusion.py
+  - synthetic sketches = perturbed real windows (noise/smooth/time-warp)
+  - ground truth: source window + same-symbol windows within 60 days
+  - RankNet pairwise loss over (positive, negative) pairs
+Ablation: held-out synthetic queries → P@5 / NDCG@5 (learned vs heuristic)
+  and top-5 overlap, printed and stored in data/fusion_config.json
 ```
 
 ---
@@ -377,7 +407,9 @@ SMALL_CAP = [
 
 ## What NOT To Build (Yet)
 
-- No ML/NN matcher implementation (stub only)
+- No additional learned components without a research justification (no LLM/RAG,
+  no heavy pretrained time-series models — the existing Siamese matcher and
+  learned fusion layer cover the ML angle)
 - No user accounts or saved searches  
 - No real-time price data (historical only)
 - No mobile-specific UI
@@ -397,7 +429,11 @@ The following must be logged per search (to stdout is fine for now):
 {
   "search_id": str,
   "sharpness": float,
-  "alpha": float,             # blend weight
+  "alpha": float,             # heuristic blend weight
+  "blend_mode": "learned" | "heuristic",
+  "heuristic_top": [symbols], # top-5 by heuristic sharpness blend
+  "learned_top": [symbols],   # top-5 by learned fusion (same as heuristic if unused)
+  "top5_overlap": float,      # 0..1 overlap of the two top-5 lists
   "stage1_count": int,
   "stage2_count": int,
   "stage3_count": int,
@@ -415,7 +451,9 @@ Did sharpness-based blending produce different results than either alone?
 
 ## Done Means
 
-- [ ] `prepare_data.py` runs and produces `data/windows.npy` and `data/meta.json`
+- [ ] Prepare data: `prepare_data.py` → `data/windows.npy` + `data/meta.json`
+- [ ] Train Siamese matcher: `generate_pairs.py` + `train.py` → `data/siamese.pt`
+- [ ] Train fusion ranker: `train_fusion.py` → `data/fusion.pt` + `data/fusion_config.json`
 - [ ] `python main.py` starts without errors
 - [ ] Canvas draws smoothly on mouse drag
 - [ ] Drawing triggers POST and opens SSE stream
@@ -425,5 +463,4 @@ Did sharpness-based blending produce different results than either alone?
 - [ ] Sketch overlay visible on each result card
 - [ ] Cap filter checkboxes work (toggle large/mid/small)
 - [ ] Window length dropdown works (30/60/90 days)
-- [ ] `matchers/nn.py` exists as a stub with `NotImplementedError`
-- [ ] Research log prints to stdout per search
+- [ ] Research log prints to stdout per search (incl. `blend_mode`, `heuristic_top`, `learned_top`)

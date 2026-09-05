@@ -4,6 +4,8 @@ data/pairs.npy
 data/siamese.pt
 data/training_loss.png
 data/evaluation_results.txt
+data/fusion.pt
+data/fusion_config.json
 
 # python
 __pycache__/
