@@ -1,5 +1,9 @@
-# data — too large for git
-
+# data — large generated artifacts (rebuild with prepare_data.py / train.py / evaluate.py)
+data/windows.npy
+data/pairs.npy
+data/siamese.pt
+data/training_loss.png
+data/evaluation_results.txt
 
 # python
 __pycache__/
